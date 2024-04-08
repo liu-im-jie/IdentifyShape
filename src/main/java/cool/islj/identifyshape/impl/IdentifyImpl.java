@@ -1,11 +1,17 @@
 package cool.islj.identifyshape.impl;
 
 import cool.islj.identifyshape.Config;
+import cool.islj.identifyshape.entry.Envelope;
 import cool.islj.identifyshape.entry.Point;
 import cool.islj.identifyshape.entry.Segment;
+import cool.islj.identifyshape.entry.Shape;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
+import java.util.Optional;
+import java.util.function.Supplier;
+import java.util.stream.Stream;
 
 public class IdentifyImpl {
 
@@ -63,6 +69,12 @@ public class IdentifyImpl {
         return new ArrayList<>(result);
     }
 
+    /**
+     * 在转折点处切割点集
+     *
+     * @param originPoints 初始点集
+     * @return 切割后的线段点集，只包含直线和曲线
+     */
     public List<Segment> split(List<Point> originPoints) {
         List<Segment> result = new ArrayList<>();
         int begin = 0;
@@ -123,5 +135,112 @@ public class IdentifyImpl {
         // 根据向量叉积/(向量模长1*向量模长2)得到cos值,进而求出弧度，再转为角度
         double cosValue = (dx1 * dx2 + dy1 * dy2) / (length1 * length2);
         return Math.acos(cosValue) * 180 / Math.PI;
+    }
+
+    /**
+     * 判断线段是直线还是曲线
+     *
+     * @param segment 线段，判断结果填在此对象的shape属性上
+     */
+    public void judgeStraightOrCurve(Segment segment) {
+        // 在该线段上平均取4-5个点，计算每两个点的斜率，如果斜率相差不大，则认为是直线，否则曲线
+        // 这里考虑之前平滑时有可能把转折点去了，所以不计算头尾点，避免误差过大
+        double minSlope = Double.MAX_VALUE;
+        double maxSlope = 0;
+        List<Point> allPoints = segment.getAllPoints();
+        int totalCount = allPoints.size();
+        int interval = (totalCount - 2) / 4;
+
+        List<Point> selectPoints = new ArrayList<>();
+        for (int i = 0; i < 5; i++) {
+            int index = 1 + i * interval;
+            selectPoints.add(allPoints.get(Math.min(index, totalCount - 2)));
+        }
+        for (int i = 0; i < selectPoints.size() - 1; i++) {
+            Point beginPoint = selectPoints.get(i);
+            Point endPoint = selectPoints.get(i + 1);
+            double slope = beginPoint.getX() - endPoint.getX() == 0 ? Double.MAX_VALUE :
+                    (beginPoint.getY() - endPoint.getY()) / (beginPoint.getX() - endPoint.getX());
+            minSlope = Math.min(minSlope, Math.abs(slope));
+            maxSlope = Math.max(maxSlope, Math.abs(slope));
+        }
+        if (maxSlope - minSlope < 1 || 1 / minSlope - 1 / maxSlope < 1) {
+            segment.setShape(Shape.STRAIGHT);
+        } else {
+            segment.setShape(Shape.CURVE);
+        }
+    }
+
+    /**
+     * 将线段两边延长，延长的长度为此图形的外接矩形短边的1/10
+     *
+     * @param originPoints 代表图形的点集
+     * @param segment      线段
+     */
+    public void extendSegment(List<Point> originPoints, Segment segment) {
+        // 获取图形的外接矩形
+        Envelope envelope = getEnvelope(originPoints);
+
+        // 获取延长线的长度
+        double minLength = Math.min((envelope.getXMax() - envelope.getXMin()), (envelope.getYMax() - envelope.getYMin()));
+        double extensionLength = minLength / 10;
+
+        // 线段延长
+        extendSegment(segment, extensionLength);
+    }
+
+    private Envelope getEnvelope(List<Point> originPoints) {
+        Supplier<Stream<Point>> pointStream = originPoints::stream;
+        Optional<Point> xMinPoint = pointStream.get().min(Comparator.comparing(Point::getX));
+        Optional<Point> yMinPoint = pointStream.get().min(Comparator.comparing(Point::getY));
+        Optional<Point> xMaxPoint = pointStream.get().max(Comparator.comparing(Point::getX));
+        Optional<Point> yMaxPoint = pointStream.get().max(Comparator.comparing(Point::getY));
+
+        if (xMinPoint.isPresent() && yMinPoint.isPresent() && xMaxPoint.isPresent() && yMaxPoint.isPresent()) {
+            return new Envelope(xMinPoint.get().getX(), yMinPoint.get().getY(),
+                    xMaxPoint.get().getX(), yMaxPoint.get().getY());
+        }
+        return new Envelope();
+    }
+
+    private void extendSegment(Segment segment, double extensionLength) {
+        if (segment.getAllPoints().size() <= 3 || Shape.STRAIGHT.equals(segment.getShape())) {
+            // 如果是直线，将头尾点向外延长
+            Point[] points = extendSegment(segment.getBeginPoint(), segment.getEndPoint(), extensionLength);
+            if (points.length >= 2) {
+                segment.setBeginPoint(points[0]);
+                segment.setEndPoint(points[1]);
+            }
+        } else if (Shape.CURVE.equals(segment.getShape())) {
+            // 如果是曲线，取头两个点和尾两个点分别延长
+            Point beginPoint = segment.getBeginPoint();
+            Point nextPoint = segment.getAllPoints().get(1);
+            Point[] points = extendSegment(beginPoint, nextPoint, extensionLength);
+            if (points.length >= 2) {
+                segment.setBeginPoint(points[0]);
+            }
+
+            Point endPoint = segment.getEndPoint();
+            Point beforePoint = segment.getAllPoints().get(segment.getAllPoints().size() - 2);
+            points = extendSegment(beforePoint, endPoint, extensionLength);
+            if (points.length >= 2) {
+                segment.setEndPoint(points[1]);
+            }
+        }
+    }
+
+    private Point[] extendSegment(Point beginPoint, Point endPoint, double extensionLength) {
+        double dx = endPoint.getX() - beginPoint.getX();
+        double dy = endPoint.getY() - beginPoint.getY();
+
+        double length = Math.sqrt(Math.pow(dx, 2) + Math.pow(dy, 2));
+        double unitDx = dx / length;
+        double unitDy = dy / length;
+
+        double newBeginX = beginPoint.getX() - unitDx * extensionLength;
+        double newBeginY = beginPoint.getY() - unitDy * extensionLength;
+        double newEndX = endPoint.getX() + unitDx * extensionLength;
+        double newEndY = endPoint.getY() + unitDy * extensionLength;
+        return new Point[]{new Point(newBeginX, newBeginY), new Point(newEndX, newEndY)};
     }
 }

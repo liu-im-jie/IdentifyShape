@@ -1,5 +1,6 @@
 package cool.islj.identifyshape.impl;
 
+import com.google.common.collect.Lists;
 import cool.islj.identifyshape.Config;
 import cool.islj.identifyshape.entry.Envelope;
 import cool.islj.identifyshape.entry.Point;
@@ -7,8 +8,11 @@ import cool.islj.identifyshape.entry.Segment;
 import cool.islj.identifyshape.entry.Shape;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Comparator;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
@@ -89,14 +93,16 @@ public class IdentifyImpl {
 
             if (Math.abs(angle) < 120 || (i < originPoints.size() - 2 &&
                     Math.abs(calcAngle(beforePoint, currentPoint, originPoints.get(i + 2))) < 120)) {
-                // 角度小于120°认为此处存在转折，打断
-                // 这里考虑到折角点在平滑时被误删了，取下一个点再做一次判断
-                Segment newSegment = new Segment();
-                newSegment.setBeginPoint(originPoints.get(begin));
-                newSegment.setEndPoint(currentPoint);
-                newSegment.setAllPoints(originPoints.subList(begin, i + 1));
-                begin = i;
-                result.add(newSegment);
+                if (i + 1 - begin > 4) {
+                    // 角度小于120°认为此处存在转折，打断
+                    // 这里考虑到折角点在平滑时被误删了，取下一个点再做一次判断
+                    Segment newSegment = new Segment();
+                    newSegment.setBeginPoint(originPoints.get(begin));
+                    newSegment.setEndPoint(currentPoint);
+                    newSegment.setAllPoints(originPoints.subList(begin, i + 1));
+                    begin = i;
+                    result.add(newSegment);
+                }
             }
         }
 
@@ -110,12 +116,12 @@ public class IdentifyImpl {
 
         // 这里预处理下直线最后误画的勾脚，判断逻辑是：
         // 线足够长，且头尾存在线段的点数小于5，就认为是勾脚，删除
-        if (result.size() > 2 && originPoints.size() > 15 &&
+        if (result.size() > 1 && originPoints.size() > 15 &&
                 result.stream().anyMatch(segment -> segment.getAllPoints().size() > 10)) {
-            if (result.getFirst().getAllPoints().size() <= 3) {
+            if (result.getFirst().getAllPoints().size() <= 4) {
                 result.removeFirst();
             }
-            if (result.getLast().getAllPoints().size() <= 3) {
+            if (result.getLast().getAllPoints().size() <= 4) {
                 result.removeLast();
             }
         }
@@ -172,7 +178,7 @@ public class IdentifyImpl {
     }
 
     /**
-     * 将线段两边延长，延长的长度为此图形的外接矩形短边的1/10
+     * 将线段两边延长，延长的长度为此图形的外接矩形长边的1/10
      *
      * @param originPoints 代表图形的点集
      * @param segment      线段
@@ -182,8 +188,8 @@ public class IdentifyImpl {
         Envelope envelope = getEnvelope(originPoints);
 
         // 获取延长线的长度
-        double minLength = Math.min((envelope.getXMax() - envelope.getXMin()), (envelope.getYMax() - envelope.getYMin()));
-        double extensionLength = minLength / 10;
+        double maxLength = Math.max((envelope.getXMax() - envelope.getXMin()), (envelope.getYMax() - envelope.getYMin()));
+        double extensionLength = maxLength / 10;
 
         // 线段延长
         extendSegment(segment, extensionLength);
@@ -208,8 +214,11 @@ public class IdentifyImpl {
             // 如果是直线，将头尾点向外延长
             Point[] points = extendSegment(segment.getBeginPoint(), segment.getEndPoint(), extensionLength);
             if (points.length >= 2) {
+                segment.setOldBeginPoint(segment.getBeginPoint());
+                segment.setOldEndPoint(segment.getEndPoint());
                 segment.setBeginPoint(points[0]);
                 segment.setEndPoint(points[1]);
+                segment.setAllPoints(Lists.newArrayList(points[0], points[1]));
             }
         } else if (Shape.CURVE.equals(segment.getShape())) {
             // 如果是曲线，取头两个点和尾两个点分别延长
@@ -217,14 +226,18 @@ public class IdentifyImpl {
             Point nextPoint = segment.getAllPoints().get(1);
             Point[] points = extendSegment(beginPoint, nextPoint, extensionLength);
             if (points.length >= 2) {
+                segment.setOldBeginPoint(segment.getBeginPoint());
                 segment.setBeginPoint(points[0]);
+                segment.getAllPoints().addFirst(points[0]);
             }
 
             Point endPoint = segment.getEndPoint();
             Point beforePoint = segment.getAllPoints().get(segment.getAllPoints().size() - 2);
             points = extendSegment(beforePoint, endPoint, extensionLength);
             if (points.length >= 2) {
+                segment.setOldEndPoint(segment.getEndPoint());
                 segment.setEndPoint(points[1]);
+                segment.getAllPoints().add(points[1]);
             }
         }
     }
@@ -242,5 +255,113 @@ public class IdentifyImpl {
         double newEndX = endPoint.getX() + unitDx * extensionLength;
         double newEndY = endPoint.getY() + unitDy * extensionLength;
         return new Point[]{new Point(newBeginX, newBeginY), new Point(newEndX, newEndY)};
+    }
+
+    /**
+     * 将线段按交点进行拆分
+     *
+     * @param segments 线段
+     * @return 拆分后的线段
+     */
+    public List<Segment> curveIntersection(List<Segment> segments) {
+        List<Segment> result = new ArrayList<>();
+        segments.forEach(targetSegment -> result.addAll(interrupt(Lists.newArrayList(targetSegment), segments)));
+        return result;
+    }
+
+    private List<Segment> interrupt(List<Segment> targetSegments, List<Segment> interruptSegments) {
+        List<Segment> result = new ArrayList<>();
+
+        List<Segment> tempSegments = new ArrayList<>();
+        Iterator<Segment> targetSegmentsIterator = targetSegments.iterator();
+        while (targetSegmentsIterator.hasNext()) {
+            Segment targetSegment = targetSegmentsIterator.next();
+            for (Segment interruptSegment : interruptSegments) {
+                List<Segment> interruptedSegments = interrupt(targetSegment, interruptSegment);
+                if (interruptedSegments.size() > 1) {
+                    // 产生交点打断了，跳出循环，此线段不再进行遍历
+                    result.remove(targetSegment);
+                    tempSegments.addAll(interruptedSegments);
+                    targetSegmentsIterator.remove();
+                    break;
+                } else {
+                    // 没有交点，暂时将其放入结果中
+                    if (!result.contains(targetSegment)) {
+                        result.add(targetSegment);
+                    }
+                }
+            }
+        }
+        if (!tempSegments.isEmpty()) {
+            result.addAll(interrupt(tempSegments, interruptSegments));
+        }
+        result.removeIf(segment -> {
+            List<Point> points = segment.getAllPoints();
+            return points.size() <= 2 &&
+                    Math.abs(points.getFirst().getX() - points.getLast().getX()) <= 0.0001 &&
+                    Math.abs(points.getFirst().getY() - points.getLast().getY()) <= 0.0001;
+        });
+        result.removeIf(segment -> segment.getAllPoints().stream().allMatch(point -> (segment.getBeginPoint().getX() >= segment.getOldEndPoint().getX() && segment.getEndPoint().getX() > segment.getOldEndPoint().getX()) ||
+                (segment.getBeginPoint().getX() < segment.getOldBeginPoint().getX() && segment.getEndPoint().getX() <= segment.getOldBeginPoint().getX())));
+        return result;
+    }
+
+    private List<Segment> interrupt(Segment targetSegment, Segment interruptSegment) {
+        List<Point> curve1 = targetSegment.getAllPoints();
+        List<Point> curve2 = interruptSegment.getAllPoints();
+
+        for (int i = 0; i < curve1.size() - 1; i++) {
+            for (int j = 0; j < curve2.size() - 1; j++) {
+                Point intersection = intersect(curve1.get(i), curve1.get(i + 1), curve2.get(j), curve2.get(j + 1));
+                if (intersection != null) {
+                    // 存在交点，将targetSegment按此交点打断
+                    Segment newSegment1 = new Segment();
+                    newSegment1.setBeginPoint(intersection);
+                    newSegment1.setEndPoint(targetSegment.getEndPoint());
+                    newSegment1.setOldBeginPoint(targetSegment.getOldBeginPoint());
+                    newSegment1.setOldEndPoint(targetSegment.getOldEndPoint());
+                    newSegment1.setAllPoints(new ArrayList<>(curve1.subList(i + 1, curve1.size())));
+                    newSegment1.getAllPoints().addFirst(intersection);
+
+                    Segment newSegment2 = new Segment();
+                    newSegment2.setBeginPoint(targetSegment.getBeginPoint());
+                    newSegment2.setEndPoint(intersection);
+                    newSegment2.setOldBeginPoint(targetSegment.getOldBeginPoint());
+                    newSegment2.setOldEndPoint(targetSegment.getOldEndPoint());
+                    newSegment2.setAllPoints(new ArrayList<>(curve1.subList(0, i + 1)));
+                    newSegment2.getAllPoints().add(intersection);
+                    return Lists.newArrayList(newSegment2, newSegment1);
+                }
+            }
+        }
+        return Lists.newArrayList(targetSegment);
+    }
+
+    private static Point intersect(Point p1, Point p2, Point p3, Point p4) {
+        double A1 = p1.getY() - p2.getY();
+        double B1 = p2.getX() - p1.getX();
+        double C1 = A1 * p1.getX() + B1 * p1.getY();
+
+        double A2 = p3.getY() - p4.getY();
+        double B2 = p4.getX() - p3.getX();
+        double C2 = A2 * p3.getX() + B2 * p3.getY();
+
+        double det_k = A1 * B2 - A2 * B1;
+
+        if (Math.abs(det_k) < 0.00001) {
+            return null;
+        }
+
+        double a = B2 / det_k;
+        double b = -1 * B1 / det_k;
+        double c = -1 * A2 / det_k;
+        double d = A1 / det_k;
+
+        double xi = a * C1 + b * C2;
+        double yi = c * C1 + d * C2;
+        Point p = new Point(xi, yi);
+        if (xi <= Math.min(p1.getX(), p2.getX()) || xi >= Math.max(p1.getX(), p2.getX())) return null;
+        if (xi <= Math.min(p3.getX(), p4.getX()) || xi >= Math.max(p3.getX(), p4.getX())) return null;
+        return p;
     }
 }

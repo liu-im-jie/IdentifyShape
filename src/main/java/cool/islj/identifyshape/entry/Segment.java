@@ -15,6 +15,10 @@ public class Segment {
 
     Point endPoint;
 
+    Point oldBeginPoint;
+
+    Point oldEndPoint;
+
     List<Point> allPoints;
 
     Shape shape;

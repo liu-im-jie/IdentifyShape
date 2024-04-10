@@ -4,14 +4,17 @@ import com.google.common.collect.Lists;
 import cool.islj.identifyshape.Config;
 import cool.islj.identifyshape.entry.Envelope;
 import cool.islj.identifyshape.entry.Point;
+import cool.islj.identifyshape.entry.Polygon;
 import cool.islj.identifyshape.entry.Segment;
 import cool.islj.identifyshape.entry.Shape;
 
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Supplier;
@@ -265,7 +268,8 @@ public class IdentifyImpl {
      */
     public List<Segment> curveIntersection(List<Segment> segments) {
         List<Segment> result = new ArrayList<>();
-        segments.forEach(targetSegment -> result.addAll(interrupt(Lists.newArrayList(targetSegment), segments)));
+        List<Segment> copySegments = new ArrayList<>(segments);
+        segments.forEach(targetSegment -> result.addAll(interrupt(Lists.newArrayList(targetSegment), copySegments)));
         return result;
     }
 
@@ -301,8 +305,8 @@ public class IdentifyImpl {
                     Math.abs(points.getFirst().getX() - points.getLast().getX()) <= 0.0001 &&
                     Math.abs(points.getFirst().getY() - points.getLast().getY()) <= 0.0001;
         });
-        result.removeIf(segment -> segment.getAllPoints().stream().allMatch(point -> (segment.getBeginPoint().getX() >= segment.getOldEndPoint().getX() && segment.getEndPoint().getX() > segment.getOldEndPoint().getX()) ||
-                (segment.getBeginPoint().getX() < segment.getOldBeginPoint().getX() && segment.getEndPoint().getX() <= segment.getOldBeginPoint().getX())));
+        result.removeIf(segment -> (segment.getBeginPoint().getX() >= segment.getOldEndPoint().getX() && segment.getEndPoint().getX() > segment.getOldEndPoint().getX()) ||
+                (segment.getBeginPoint().getX() < segment.getOldBeginPoint().getX() && segment.getEndPoint().getX() <= segment.getOldBeginPoint().getX()));
         return result;
     }
 
@@ -313,23 +317,25 @@ public class IdentifyImpl {
         for (int i = 0; i < curve1.size() - 1; i++) {
             for (int j = 0; j < curve2.size() - 1; j++) {
                 Point intersection = intersect(curve1.get(i), curve1.get(i + 1), curve2.get(j), curve2.get(j + 1));
-                if (intersection != null) {
-                    // 存在交点，将targetSegment按此交点打断
+                if (intersection != null && !Objects.equals(intersection.getX(), targetSegment.getBeginPoint().getX()) &&
+                        !Objects.equals(intersection.getX(), targetSegment.getEndPoint().getX())) {
+                    // 存在交点,且交点不是头尾点，将targetSegment按此交点打断
                     Segment newSegment1 = new Segment();
-                    newSegment1.setBeginPoint(intersection);
-                    newSegment1.setEndPoint(targetSegment.getEndPoint());
+                    newSegment1.setBeginPoint(targetSegment.getBeginPoint());
+                    newSegment1.setEndPoint(intersection);
                     newSegment1.setOldBeginPoint(targetSegment.getOldBeginPoint());
                     newSegment1.setOldEndPoint(targetSegment.getOldEndPoint());
-                    newSegment1.setAllPoints(new ArrayList<>(curve1.subList(i + 1, curve1.size())));
-                    newSegment1.getAllPoints().addFirst(intersection);
+                    newSegment1.setAllPoints(new ArrayList<>(curve1.subList(0, i + 1)));
+                    newSegment1.getAllPoints().add(intersection);
 
                     Segment newSegment2 = new Segment();
-                    newSegment2.setBeginPoint(targetSegment.getBeginPoint());
-                    newSegment2.setEndPoint(intersection);
+                    newSegment2.setBeginPoint(intersection);
+                    newSegment2.setEndPoint(targetSegment.getEndPoint());
                     newSegment2.setOldBeginPoint(targetSegment.getOldBeginPoint());
                     newSegment2.setOldEndPoint(targetSegment.getOldEndPoint());
-                    newSegment2.setAllPoints(new ArrayList<>(curve1.subList(0, i + 1)));
-                    newSegment2.getAllPoints().add(intersection);
+                    newSegment2.setAllPoints(new ArrayList<>(curve1.subList(i + 1, curve1.size())));
+                    newSegment2.getAllPoints().addFirst(intersection);
+
                     return Lists.newArrayList(newSegment2, newSegment1);
                 }
             }
@@ -338,30 +344,140 @@ public class IdentifyImpl {
     }
 
     private static Point intersect(Point p1, Point p2, Point p3, Point p4) {
-        double A1 = p1.getY() - p2.getY();
-        double B1 = p2.getX() - p1.getX();
-        double C1 = A1 * p1.getX() + B1 * p1.getY();
+        double x1 = p1.getX();
+        double y1 = p1.getY();
+        double x2 = p2.getX();
+        double y2 = p2.getY();
 
-        double A2 = p3.getY() - p4.getY();
-        double B2 = p4.getX() - p3.getX();
-        double C2 = A2 * p3.getX() + B2 * p3.getY();
+        double x3 = p3.getX();
+        double y3 = p3.getY();
+        double x4 = p4.getX();
+        double y4 = p4.getY();
 
-        double det_k = A1 * B2 - A2 * B1;
+        double d = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4);
 
-        if (Math.abs(det_k) < 0.00001) {
-            return null;
+        if (d == 0) {
+            return null; // 两条线段平行或共线，没有交点
         }
 
-        double a = B2 / det_k;
-        double b = -1 * B1 / det_k;
-        double c = -1 * A2 / det_k;
-        double d = A1 / det_k;
+        double px = ((x1 * y2 - y1 * x2) * (x3 - x4) - (x1 - x2) * (x3 * y4 - y3 * x4)) / d;
+        double py = ((x1 * y2 - y1 * x2) * (y3 - y4) - (y1 - y2) * (x3 * y4 - y3 * x4)) / d;
 
-        double xi = a * C1 + b * C2;
-        double yi = c * C1 + d * C2;
-        Point p = new Point(xi, yi);
-        if (xi <= Math.min(p1.getX(), p2.getX()) || xi >= Math.max(p1.getX(), p2.getX())) return null;
-        if (xi <= Math.min(p3.getX(), p4.getX()) || xi >= Math.max(p3.getX(), p4.getX())) return null;
-        return p;
+        if (px < Math.min(x1, x2) || px > Math.max(x1, x2) || px < Math.min(x3, x4) || px > Math.max(x3, x4)) {
+            return null; // 交点不在线段上
+        }
+
+        if (py < Math.min(y1, y2) || py > Math.max(y1, y2) || py < Math.min(y3, y4) || py > Math.max(y3, y4)) {
+            return null; // 交点不在线段上
+        }
+
+        return new Point(px, py);
+    }
+
+    /**
+     * 组合线段，看是否有线段能组成封闭图形/箭头
+     *
+     * @param allSegments 线段
+     * @return 如果能组成封闭图形/箭头，输出图形/箭头
+     */
+    public Map<Point, List<Segment>> constructShape(List<Segment> allSegments) {
+        Map<Point, List<Segment>> results = new HashMap<>();
+        Map<Point, List<Segment>> pointToSegmentsMap = new HashMap<>();
+
+        for (Segment segment : allSegments) {
+            Point beginPoint = segment.getBeginPoint();
+            Point endPoint = segment.getEndPoint();
+
+            pointToSegmentsMap.computeIfAbsent(beginPoint, k -> new ArrayList<>()).add(segment);
+            pointToSegmentsMap.computeIfAbsent(endPoint, k -> new ArrayList<>()).add(segment);
+        }
+
+        // 判断封闭图形，以每个点作为起点，进行深度优先遍历，查找能再次回到自己的路
+        for (Point startPoint : pointToSegmentsMap.keySet()) {
+            List<Segment> visitedSegments = new ArrayList<>();
+            List<Segment> closedPath = dfs(startPoint, startPoint, visitedSegments, pointToSegmentsMap);
+            if (closedPath != null) {
+                if (results.values().stream().anyMatch(segments ->
+                        segments.size() == closedPath.size() && new HashSet<>(segments).containsAll(closedPath))) {
+                    continue;
+                }
+                results.put(startPoint, closedPath);
+            }
+        }
+
+        // 再次判断相连的边的斜率是否近似，如果近似，合并
+        Map<Point, List<Segment>> mergeResults = new HashMap<>();
+        results.forEach((point, segments) -> mergeResults.put(point, mergeSegments(segments)));
+
+        // 判断箭头
+        // 判断小箭头
+        // TODO
+
+        return mergeResults;
+    }
+
+    private List<Segment> dfs(Point startPoint, Point currentPoint,
+                              List<Segment> visitedSegments, Map<Point, List<Segment>> pointToSegmentsMap) {
+        List<Segment> currentSegments = pointToSegmentsMap.get(currentPoint);
+        for (Segment segment : currentSegments) {
+            if (visitedSegments.contains(segment)) {
+                continue;
+            }
+            Point nextPoint = segment.otherPoint(currentPoint);
+            visitedSegments.add(segment);
+            if (nextPoint.equals(startPoint)) {
+                return new ArrayList<>(visitedSegments);
+            }
+            List<Segment> result = dfs(startPoint, segment.otherPoint(currentPoint), visitedSegments, pointToSegmentsMap);
+            if (result != null) {
+                return result;
+            }
+            visitedSegments.remove(segment);
+        }
+        return null;
+    }
+
+    private List<Segment> mergeSegments(List<Segment> segments) {
+        List<Segment> mergedSegments = new ArrayList<>();
+        Segment currentSegment = segments.getFirst();
+        for (int i = 1; i < segments.size(); i++) {
+            Segment nextSegment = segments.get(i);
+            if (Shape.CURVE.equals(currentSegment.getShape())) {
+                // 曲线不合并
+                currentSegment = nextSegment;
+                continue;
+            }
+            // 之前已经确保每条线段是相连的了，这里不需要重复判断，直接判断斜率是否近似即可
+            Point currentBeginPoint = currentSegment.getBeginPoint();
+            Point currentEndPoint = currentSegment.getEndPoint();
+            Point nextBeginPoint = nextSegment.getBeginPoint();
+            Point nextEndPoint = nextSegment.getEndPoint();
+            double currentSlope = currentBeginPoint.getX() - currentEndPoint.getX() == 0 ? Double.MAX_VALUE :
+                    (currentBeginPoint.getY() - currentEndPoint.getY()) / (currentBeginPoint.getX() - currentEndPoint.getX());
+            double nextSlope = nextBeginPoint.getX() - nextEndPoint.getX() == 0 ? Double.MAX_VALUE :
+                    (nextBeginPoint.getY() - nextEndPoint.getY()) / (nextBeginPoint.getX() - nextEndPoint.getX());
+            if (Math.abs(Math.abs(currentSlope) - Math.abs(nextSlope)) < 1 ||
+                    Math.abs(1 / Math.abs(currentSlope) - 1 / Math.abs(nextSlope)) < 1) {
+                // 合并
+                List<Point> currentPoints = Lists.newArrayList(currentBeginPoint, currentEndPoint);
+                List<Point> nextPoints = Lists.newArrayList(nextBeginPoint, nextEndPoint);
+                List<Point> intersectPoints = new ArrayList<>(currentPoints);
+                intersectPoints.retainAll(nextPoints);
+                currentPoints.removeAll(intersectPoints);
+                nextPoints.removeAll(intersectPoints);
+
+                Segment newSegment = new Segment();
+                newSegment.setBeginPoint(currentPoints.getFirst());
+                newSegment.setEndPoint(nextPoints.getFirst());
+                newSegment.setAllPoints(Lists.newArrayList(newSegment.getBeginPoint(), newSegment.getEndPoint()));
+                newSegment.setShape(Shape.STRAIGHT);
+                currentSegment = newSegment;
+            } else {
+                mergedSegments.add(currentSegment);
+                currentSegment = nextSegment;
+            }
+        }
+        mergedSegments.add(currentSegment);
+        return mergedSegments;
     }
 }

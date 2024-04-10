@@ -23,6 +23,8 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
 @RunWith(SpringRunner.class)
 @SpringBootTest
@@ -63,7 +65,7 @@ public class IdentifyImplTest {
     }
 
     @Test
-    public void test() throws Exception {
+    public void testFlag() throws Exception {
         List<Segment> allSegments = new ArrayList<>();
         testData.removeLast();
         List<Point> allPoints = testData.stream().flatMap(Collection::stream).toList();
@@ -95,18 +97,30 @@ public class IdentifyImplTest {
             Segment segment = newSegments.get(j);
             writeCsv(segment.getAllPoints(), segment.getShape(), OUTPUT_FILE_PATH + "_" + j + "_interrupt.csv");
         }
+
+        Map<Point, List<Segment>> shapes = identifyService.constructShape(newSegments);
+        AtomicInteger shapeCount = new AtomicInteger();
+        shapes.values().forEach(segments -> {
+            List<Point> points = segments.stream().flatMap(segment -> segment.getAllPoints().stream()).distinct().toList();
+            try {
+                writeCsv(points, null, OUTPUT_FILE_PATH + "_" + shapeCount.get() + "_shape.csv");
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+            shapeCount.getAndIncrement();
+        });
     }
 
     public void writeCsv(List<Point> points, Shape shape, String filePath) throws Exception {
         try (FileOutputStream fos = new FileOutputStream(filePath)) {
             OutputStreamWriter osw = new OutputStreamWriter(fos, StandardCharsets.UTF_8);
 
-            CSVFormat csvFormat = CSVFormat.DEFAULT.withHeader("Longitude", "Latitude");
+            CSVFormat csvFormat = CSVFormat.DEFAULT.withHeader("Longitude", "Latitude", "Shape");
             CSVPrinter csvPrinter = new CSVPrinter(osw, csvFormat);
 
             for (int i = 0; i < points.size(); i++) {
                 Point point = points.get(i);
-                csvPrinter.printRecord(point.getX(), point.getY());
+                csvPrinter.printRecord(point.getX(), point.getY(), shape == null ? "" : shape.name());
             }
 
             csvPrinter.flush();

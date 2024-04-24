@@ -22,6 +22,7 @@ import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -32,7 +33,7 @@ public class IdentifyImplTest {
 
     private IdentifyImpl identifyService = new IdentifyImpl();
 
-    private final String TEST_DATA_FILE = "test/test_data.json";
+    private final String TEST_DATA_FILE = "test/arrows.json";
 
     private final String OUTPUT_FILE_PATH = "D:/Code/test/result";
 
@@ -67,27 +68,33 @@ public class IdentifyImplTest {
     @Test
     public void testFlag() throws Exception {
         List<Segment> allSegments = new ArrayList<>();
-        testData.removeLast();
         List<Point> allPoints = testData.stream().flatMap(Collection::stream).toList();
         for (int i = 0; i < testData.size(); i++) {
             List<Point> points = testData.get(i);
-            writeCsv(points, null, OUTPUT_FILE_PATH + "_" + i + "_originData.csv");
+            writeCsv(points, null, OUTPUT_FILE_PATH + "_originData_" + i + ".csv");
             // 平滑
             points = identifyService.smooth(points, pixelDistance);
-            writeCsv(points, null, OUTPUT_FILE_PATH + "_" + i + "_smooth.csv");
+            writeCsv(points, null, OUTPUT_FILE_PATH + "_smooth_" + i + ".csv");
             // 切割
             List<Segment> segments = identifyService.split(points);
             for (int j = 0; j < segments.size(); j++) {
                 Segment segment = segments.get(j);
                 identifyService.judgeStraightOrCurve(segment);
                 try {
-                    writeCsv(segment.getAllPoints(), segment.getShape(), OUTPUT_FILE_PATH + "_" + i + "_" + j + "_split.csv");
+                    writeCsv(segment.getAllPoints(), segment.getShape(), OUTPUT_FILE_PATH + "_split_" + i + "_" + j + ".csv");
                 } catch (Exception e) {
                     throw new RuntimeException(e);
                 }
-                // 外扩
-                identifyService.extendSegment(allPoints, segment);
-                writeCsv(segment.getAllPoints(), segment.getShape(), OUTPUT_FILE_PATH + "_" + i + "_" + j + "_extent.csv");
+
+            }
+
+            Iterator<Segment> iterator = segments.iterator();
+            int j = 0;
+            while (iterator.hasNext()) {
+                Segment nextSegment = iterator.next();
+                identifyService.extendSegment(allPoints, nextSegment);
+                writeCsv(nextSegment.getAllPoints(), nextSegment.getShape(), OUTPUT_FILE_PATH + "_extent_" + i + "_" + j + ".csv");
+                j++;
             }
             allSegments.addAll(segments);
         }
@@ -95,7 +102,7 @@ public class IdentifyImplTest {
         List<Segment> newSegments = identifyService.curveIntersection(allSegments);
         for (int j = 0; j < newSegments.size(); j++) {
             Segment segment = newSegments.get(j);
-            writeCsv(segment.getAllPoints(), segment.getShape(), OUTPUT_FILE_PATH + "_" + j + "_interrupt.csv");
+            writeCsv(segment.getAllPoints(), segment.getShape(), OUTPUT_FILE_PATH + "_interrupt_" + j + ".csv");
         }
 
         Map<Point, List<Segment>> shapes = identifyService.constructShape(newSegments);
@@ -122,10 +129,8 @@ public class IdentifyImplTest {
                 Point point = points.get(i);
                 csvPrinter.printRecord(point.getX(), point.getY(), shape == null ? "" : shape.name());
             }
-
             csvPrinter.flush();
             csvPrinter.close();
         }
-
     }
 }

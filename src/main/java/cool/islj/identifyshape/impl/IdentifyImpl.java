@@ -4,7 +4,6 @@ import com.google.common.collect.Lists;
 import cool.islj.identifyshape.Config;
 import cool.islj.identifyshape.entry.Envelope;
 import cool.islj.identifyshape.entry.Point;
-import cool.islj.identifyshape.entry.Polygon;
 import cool.islj.identifyshape.entry.Segment;
 import cool.islj.identifyshape.entry.Shape;
 
@@ -86,7 +85,7 @@ public class IdentifyImpl {
         List<Segment> result = new ArrayList<>();
         int begin = 0;
 
-        // 计算每三个点之间的夹角，夹角小于120°认为是出现了转折，打断
+        // 计算每三个点之间的夹角，夹角小于150°认为是出现了转折，打断
         for (int i = 1; i < originPoints.size() - 1; i++) {
             Point beforePoint = originPoints.get(i - 1);
             Point currentPoint = originPoints.get(i);
@@ -94,8 +93,8 @@ public class IdentifyImpl {
 
             double angle = calcAngle(beforePoint, currentPoint, nextPoint);
 
-            if (Math.abs(angle) < 120 || (i < originPoints.size() - 2 &&
-                    Math.abs(calcAngle(beforePoint, currentPoint, originPoints.get(i + 2))) < 120)) {
+            if (Math.abs(angle) < 150 || (i < originPoints.size() - 2 &&
+                    Math.abs(calcAngle(beforePoint, currentPoint, originPoints.get(i + 2))) < 150)) {
                 if (i + 1 - begin > 4) {
                     // 角度小于120°认为此处存在转折，打断
                     // 这里考虑到折角点在平滑时被误删了，取下一个点再做一次判断
@@ -113,7 +112,7 @@ public class IdentifyImpl {
             Segment newSegment = new Segment();
             newSegment.setBeginPoint(originPoints.get(begin));
             newSegment.setEndPoint(originPoints.getLast());
-            newSegment.setAllPoints(originPoints.subList(begin, originPoints.size()));
+            newSegment.setAllPoints(new ArrayList<>(originPoints.subList(begin, originPoints.size())));
             result.add(newSegment);
         }
 
@@ -144,6 +143,23 @@ public class IdentifyImpl {
         // 根据向量叉积/(向量模长1*向量模长2)得到cos值,进而求出弧度，再转为角度
         double cosValue = (dx1 * dx2 + dy1 * dy2) / (length1 * length2);
         return Math.acos(cosValue) * 180 / Math.PI;
+    }
+
+    private double calcAngle(Segment segment1, Segment segment2) {
+        Point A = segment1.getBeginPoint();
+        Point B = segment1.getEndPoint();
+        Point C = segment2.getBeginPoint();
+        Point D = segment2.getEndPoint();
+
+        double ABX = B.getX() - A.getX();
+        double ABY = B.getY() - A.getY();
+        double CDX = D.getX() - C.getX();
+        double CDY = D.getY() - C.getY();
+
+        double dotProduct = ABX * CDX + ABY * CDY;
+        double crossProduct = ABX * CDY - ABY * CDX;
+
+        return Math.atan2(Math.abs(crossProduct), dotProduct) * 180 / Math.PI;
     }
 
     /**
@@ -406,14 +422,28 @@ public class IdentifyImpl {
         }
 
         // 再次判断相连的边的斜率是否近似，如果近似，合并
-        Map<Point, List<Segment>> mergeResults = new HashMap<>();
-        results.forEach((point, segments) -> mergeResults.put(point, mergeSegments(segments)));
+        Map<Point, List<Segment>> polygonResults = new HashMap<>();
+        results.forEach((point, segments) -> polygonResults.put(point, mergeSegments(segments)));
 
-        // 判断箭头
+//        Map<Segment, List<Segment>> arrows =  findArrows(allSegments, polygonResults);
+
+         return polygonResults;
+    }
+
+    /**
+     * 查找小箭头
+     * @param allSegments 所有线段
+     * @param polygonSegments 构成封闭图形的线段，这些线段不可能是构成箭头的线段，需要先排除
+     * @return <箭杆，组成箭头的线段>
+     */
+    public Map<Segment, List<Segment>> findArrows(List<Segment> allSegments, Map<Point, List<Segment>> polygonSegments) {
         // 判断小箭头
-        // TODO
-
-        return mergeResults;
+        // 先去除封闭图形的线段，这些线段不可能构成箭头，然后，将相连且斜率相近的线段合并。
+        // 假设每一条线段都是箭杆，查找和它相交的每一条线段，是否存在夹角相似且小于90°，且长度近似相等的两条线段
+        List<Segment> copySegments = new ArrayList<>(allSegments);
+        copySegments.removeIf(segment -> polygonSegments.values().stream().anyMatch(segments -> segments.contains(segment)));
+        copySegments = mergeSegments(copySegments);
+        return findArrows(copySegments);
     }
 
     private List<Segment> dfs(Point startPoint, Point currentPoint,
@@ -479,5 +509,84 @@ public class IdentifyImpl {
         }
         mergedSegments.add(currentSegment);
         return mergedSegments;
+    }
+
+    private Map<Segment, List<Segment>> findArrows(List<Segment> copySegments) {
+        Map<Segment, List<Segment>> arrowMap = new HashMap<>();
+        for (Segment segment : copySegments) {
+            // 假设此线段为箭杆，求出所有其他线段与其的交点，找出其中交点距离此线段起终点最近的两个点对应的线段
+            Map<Point, Segment> intersectedSegments = new HashMap<>();
+            Point begin1 = null, begin2 = null, end1 = null, end2 = null;
+            Segment beginSegment1 = null, beginSegment2 = null;
+            Segment endSegment1 = null, endSegment2 = null;
+            double distance1 = Double.MAX_VALUE, distance2 = Double.MAX_VALUE, distance3 = Double.MAX_VALUE, distance4 = Double.MAX_VALUE;
+            for (Segment otherSegment : copySegments) {
+                if (segment != otherSegment) {
+                    Point intersection = intersect(segment.getBeginPoint(), segment.getEndPoint(),
+                            otherSegment.getBeginPoint(), otherSegment.getEndPoint());
+                    if (intersection != null) {
+                        double beginDistance = getDistance(intersection, segment.getBeginPoint());
+                        if (distance1 > beginDistance) {
+                            if (begin1 != null) {
+                                distance2 = distance1;
+                                begin2 = begin1;
+                                beginSegment2 = beginSegment1;
+                            }
+                            distance1 = beginDistance;
+                            begin1 = intersection;
+                            beginSegment1 = otherSegment;
+                        } else if (distance2 > beginDistance && distance1 < beginDistance) {
+                            distance2 = beginDistance;
+                            begin2 = intersection;
+                            beginSegment2 = otherSegment;
+                        }
+
+                        double endDistance = getDistance(intersection, segment.getEndPoint());
+                        if (distance3 > endDistance) {
+                            if (end1 != null) {
+                                distance4 = distance3;
+                                end2 = end1;
+                                endSegment2 = endSegment1;
+                            }
+                            distance3 = endDistance;
+                            end1 = intersection;
+                            endSegment1 = otherSegment;
+                        } else if (distance4 > endDistance && distance3 < endDistance) {
+                            distance4 = endDistance;
+                            end2 = intersection;
+                            endSegment2 = otherSegment;
+                        }
+                    }
+                }
+            }
+
+            if (begin1 == null || begin2 == null || end1 == null || end2 == null) {
+                continue;
+            }
+            double length = Math.sqrt(Math.pow((segment.getBeginPoint().getX() - segment.getEndPoint().getX()), 2) +
+                    Math.pow((segment.getBeginPoint().getY() - segment.getEndPoint().getY()), 2));
+            if (Math.abs(distance1 - distance2) < length / 10 && distance1 < length / 10 &&
+                    distance2 < length / 10) {
+                // 计算这两条线段和箭杆的夹角，应该相似
+                double angle1 = calcAngle(beginSegment1, segment);
+                double angle2 = calcAngle(beginSegment2, segment);
+                if (angle1 - angle2 < 20) {
+                    arrowMap.put(segment, Lists.newArrayList(segment, beginSegment1, beginSegment2));
+                    continue;
+                }
+            }
+            if (Math.abs(distance3 - distance4) < length / 10 && distance3 < length / 10 && distance4 < length / 10) {
+                double angle3 = calcAngle(endSegment1, segment);
+                double angle4 = calcAngle(endSegment2, segment);
+                if (angle3 - angle4 < 20) {
+                    arrowMap.put(segment, Lists.newArrayList(segment, endSegment1, endSegment2));
+                }
+            }
+        }
+        return arrowMap;
+    }
+
+    private Double getDistance(Point beginPoint, Point endPoint) {
+        return Math.sqrt(Math.pow((endPoint.getX() - beginPoint.getX()), 2) + Math.pow((endPoint.getY() - beginPoint.getY()), 2));
     }
 }
